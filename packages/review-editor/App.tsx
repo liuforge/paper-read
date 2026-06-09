@@ -26,6 +26,11 @@ import {
 } from '@plannotator/ui/utils/aiProvider';
 import { DiffTypeSetupDialog } from '@plannotator/ui/components/DiffTypeSetupDialog';
 import { needsDiffTypeSetup } from '@plannotator/ui/utils/diffTypeSetup';
+import { LookAndFeelAnnouncementDialog } from '@plannotator/ui/components/LookAndFeelAnnouncementDialog';
+import {
+  markLookAndFeelAnnouncementSeen,
+  needsLookAndFeelAnnouncement,
+} from '@plannotator/ui/utils/lookAndFeelAnnouncement';
 import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration } from '@plannotator/ui/types';
 import { useResizablePanel } from '@plannotator/ui/hooks/useResizablePanel';
 import { useCodeAnnotationDraft } from '@plannotator/ui/hooks/useCodeAnnotationDraft';
@@ -136,6 +141,9 @@ const ReviewApp: React.FC = () => {
   const diffFontFamily = useConfigValue('diffFontFamily');
   const diffFontSize = useConfigValue('diffFontSize');
   const diffTabSize = useConfigValue('diffTabSize');
+  // Global plan-look preference; surfaced here only by the shared 0.20.0
+  // look-and-feel announcement (the grid/clean chooser applies to plan review).
+  const gridEnabled = useConfigValue('gridEnabled');
 
   // Load custom diff font and override --font-mono for surrounding review elements
   useEffect(() => {
@@ -417,6 +425,14 @@ const ReviewApp: React.FC = () => {
   });
   const [showDiffTypeSetup, setShowDiffTypeSetup] = useState(false);
   const [diffTypeSetupPending, setDiffTypeSetupPending] = useState(false);
+  // The 0.20.0 release / look-and-feel announcement also runs in code review.
+  // Seen-state is a shared cookie (host-scoped), so dismissing it in either app
+  // suppresses it in the other — it appears once across both.
+  const [showLookAndFeel, setShowLookAndFeel] = useState(needsLookAndFeelAnnouncement);
+  const dismissLookAndFeel = useCallback(() => {
+    markLookAndFeelAnnouncementSeen();
+    setShowLookAndFeel(false);
+  }, []);
   const aiChat = useAIChat({
     patch: diffData?.rawPatch ?? '',
     providerId: aiConfig.providerId,
@@ -2542,8 +2558,18 @@ const ReviewApp: React.FC = () => {
           showCancel
         />
 
+        {/* 0.20.0 look-and-feel / release announcement. Shared with the plan
+            editor via a host-scoped cookie, so it shows once across both apps.
+            Takes precedence over the diff-type setup so the two never stack. */}
+        <LookAndFeelAnnouncementDialog
+          isOpen={showLookAndFeel}
+          gridEnabled={gridEnabled}
+          onToggleGrid={(v) => configStore.set('gridEnabled', v)}
+          onDismiss={dismissLookAndFeel}
+        />
+
         {/* Diff type setup dialog — first-run only */}
-        {showDiffTypeSetup && (
+        {showDiffTypeSetup && !showLookAndFeel && (
           <DiffTypeSetupDialog
             onComplete={(selected) => {
               setShowDiffTypeSetup(false);
