@@ -17,8 +17,9 @@ import { isTerminalStatus } from '@plannotator/shared/agent-jobs';
 import { cn } from '../lib/utils';
 import { ReviewAgentsIcon } from './ReviewAgentsIcon';
 import { useAgentSettings } from '../hooks/useAgentSettings';
+import type { AgentEngine, AgentMode } from '../hooks/useAgentSettings';
 
-// --- Agent option catalogs (shared across provider + tour-engine dropdowns) ---
+// --- Agent option catalogs (shared across review + tour engine dropdowns) ---
 
 const CLAUDE_MODELS: Array<{ value: string; label: string }> = [
   { value: 'claude-fable-5', label: 'Fable 5' },
@@ -67,18 +68,15 @@ const TOUR_CLAUDE_MODELS: Array<{ value: string; label: string }> = [
   { value: 'opus', label: 'Opus (thorough)' },
 ];
 
-// Dropdown labels: action first, provider second. Groups visually by action —
-// you scan two "Code Review" entries and one "Code Tour" instead of three raw
-// CLI names.
-const PROVIDER_DROPDOWN_LABEL: Record<string, string> = {
-  claude: 'Code Review · Claude',
-  codex: 'Code Review · Codex',
+const MODE_LABEL: Record<AgentMode, string> = {
+  review: 'Code Review',
   tour: 'Code Tour',
 };
 
-function providerDropdownLabel(id: string, fallback: string): string {
-  return PROVIDER_DROPDOWN_LABEL[id] ?? fallback;
-}
+const ENGINE_LABEL: Record<AgentEngine, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+};
 
 interface AgentsTabProps {
   jobs: AgentJobInfo[];
@@ -370,7 +368,8 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const settings = useAgentSettings();
   const {
-    selectedProvider,
+    selectedMode,
+    reviewEngine,
     tourEngine,
     claudeModel,
     claudeEffort,
@@ -382,7 +381,8 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     tourCodexModel,
     tourCodexReasoning,
     tourCodexFast,
-    setSelectedProvider,
+    setSelectedMode,
+    setReviewEngine,
     setTourEngine,
     setClaudeModel,
     setClaudeEffort,
@@ -396,25 +396,48 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     setTourCodexFast,
   } = settings;
 
-  // Reconcile provider + tour engine against live capabilities. Runs when
+  const claudeAvailable = capabilities?.providers.some((p) => p.id === 'claude' && p.available) ?? false;
+  const codexAvailable = capabilities?.providers.some((p) => p.id === 'codex' && p.available) ?? false;
+  const tourAvailable = capabilities?.providers.some((p) => p.id === 'tour' && p.available) ?? false;
+
+  const availableEngines = useMemo<AgentEngine[]>(() => {
+    const engines: AgentEngine[] = [];
+    if (claudeAvailable) engines.push('claude');
+    if (codexAvailable) engines.push('codex');
+    return engines;
+  }, [claudeAvailable, codexAvailable]);
+
+  const availableModes = useMemo<AgentMode[]>(() => {
+    const modes: AgentMode[] = [];
+    if (availableEngines.length > 0) modes.push('review');
+    if (tourAvailable && availableEngines.length > 0) modes.push('tour');
+    return modes;
+  }, [availableEngines.length, tourAvailable]);
+
+  const firstAvailableEngine = availableEngines[0] ?? null;
+  const engineAvailable = (engine: AgentEngine) => engine === 'claude' ? claudeAvailable : codexAvailable;
+
+  // Reconcile mode + engine choices against live capabilities. Runs when
   // capabilities change or the stored selection becomes invalid.
   useEffect(() => {
-    if (!capabilities) return;
-    const available = capabilities.providers.filter((p) => p.available);
-    if (available.length === 0) return;
-    if (!selectedProvider || !available.some((p) => p.id === selectedProvider)) {
-      setSelectedProvider(available[0].id);
+    if (!capabilities || availableModes.length === 0) return;
+    if (!selectedMode || !availableModes.includes(selectedMode)) {
+      setSelectedMode(availableModes[0]);
     }
-    const hasClaude = available.some((p) => p.id === 'claude');
-    const hasCodex = available.some((p) => p.id === 'codex');
-    if (tourEngine === 'claude' && !hasClaude && hasCodex) setTourEngine('codex');
-    else if (tourEngine === 'codex' && !hasCodex && hasClaude) setTourEngine('claude');
-  }, [capabilities, selectedProvider, tourEngine, setSelectedProvider, setTourEngine]);
-
-  const availableProviders = useMemo(
-    () => capabilities?.providers.filter((p) => p.available) ?? [],
-    [capabilities],
-  );
+    if (!firstAvailableEngine) return;
+    if (!engineAvailable(reviewEngine)) setReviewEngine(firstAvailableEngine);
+    if (!engineAvailable(tourEngine)) setTourEngine(firstAvailableEngine);
+  }, [
+    capabilities,
+    availableModes,
+    firstAvailableEngine,
+    selectedMode,
+    reviewEngine,
+    tourEngine,
+    setSelectedMode,
+    setReviewEngine,
+    setTourEngine,
+  ]);
 
   // Annotation counts per job source
   const annotationCounts = useMemo(() => {
@@ -442,103 +465,120 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     [jobs],
   );
 
-  // Detect which engines are available for tour config
-  const claudeAvailable = capabilities?.providers.some((p) => p.id === 'claude' && p.available) ?? false;
-  const codexAvailable = capabilities?.providers.some((p) => p.id === 'codex' && p.available) ?? false;
-
   type LaunchParams = Parameters<typeof onLaunch>[0];
-  const buildLaunch: Record<string, () => LaunchParams> = {
-    claude: () => ({ provider: 'claude', label: 'Code Review', model: claudeModel, effort: claudeEffort }),
-    codex: () => ({
+  const buildReviewLaunch = (engine: AgentEngine): LaunchParams => {
+    if (engine === 'claude') {
+      return { provider: 'claude', label: 'Code Review', model: claudeModel, effort: claudeEffort };
+    }
+    return {
       provider: 'codex',
       label: 'Code Review',
       model: codexModel,
       reasoningEffort: codexReasoning,
       ...(codexFast && { fastMode: true }),
-    }),
-    tour: () => ({
-      provider: 'tour',
-      label: 'Code Tour',
-      engine: tourEngine,
-      model: tourEngine === 'claude' ? tourClaudeModel : tourCodexModel,
-      ...(tourEngine === 'claude'
-        ? { effort: tourClaudeEffort }
-        : { reasoningEffort: tourCodexReasoning, ...(tourCodexFast && { fastMode: true }) }),
-    }),
+    };
   };
+  const buildTourLaunch = (): LaunchParams => ({
+    provider: 'tour',
+    label: 'Code Tour',
+    engine: tourEngine,
+    model: tourEngine === 'claude' ? tourClaudeModel : tourCodexModel,
+    ...(tourEngine === 'claude'
+      ? { effort: tourClaudeEffort }
+      : { reasoningEffort: tourCodexReasoning, ...(tourCodexFast && { fastMode: true }) }),
+  });
+
+  const canLaunch = selectedMode === 'review'
+    ? engineAvailable(reviewEngine)
+    : selectedMode === 'tour'
+      ? tourAvailable && engineAvailable(tourEngine)
+      : false;
 
   const handleLaunch = () => {
-    if (!selectedProvider) return;
-    onLaunch(buildLaunch[selectedProvider]?.() ?? { provider: selectedProvider, label: selectedProvider });
+    if (!canLaunch) return;
+    onLaunch(selectedMode === 'review' ? buildReviewLaunch(reviewEngine) : buildTourLaunch());
   };
+
+  const modeOptions = availableModes.map((mode) => ({ value: mode, label: MODE_LABEL[mode] }));
+  const engineOptions = availableEngines.map((engine) => ({ value: engine, label: ENGINE_LABEL[engine] }));
+  const renderStaticChoice = (label: string, icon?: React.ReactNode) => (
+    <div className="flex items-center gap-2 rounded-lg border border-border/30 bg-surface-1/30 px-2.5 py-1.5">
+      {icon}
+      <span className="text-[11px] text-foreground/80">{label}</span>
+    </div>
+  );
+
+  const renderEngineSelect = (value: AgentEngine, onChange: (engine: AgentEngine) => void) => (
+    <ConfigRow label="Engine" stacked>
+      {availableEngines.length > 1 ? (
+        <SelectMenu
+          value={value}
+          options={engineOptions}
+          onChange={(next) => onChange(next as AgentEngine)}
+        />
+      ) : (
+        renderStaticChoice(engineOptions[0]?.label ?? ENGINE_LABEL[value])
+      )}
+    </ConfigRow>
+  );
 
   return (
     <div className="flex flex-col h-full">
       {/* Launch panel (pinned to the top) */}
-      {availableProviders.length > 0 && (
+      {availableModes.length > 0 && (
         <div className="border-b border-border/40 p-3">
           <div className="mb-2 font-medium text-[9px] uppercase tracking-wider text-muted-foreground/40">
             Launch agent
           </div>
 
           <div className="space-y-2">
-            {/* Provider */}
-            {availableProviders.length > 1 ? (
+            {availableModes.length > 1 ? (
               <SelectMenu
-                value={selectedProvider ?? ''}
-                options={availableProviders.map((p) => ({ value: p.id, label: providerDropdownLabel(p.id, p.name) }))}
-                onChange={setSelectedProvider}
+                value={selectedMode ?? ''}
+                options={modeOptions}
+                onChange={(next) => setSelectedMode(next as AgentMode)}
                 icon={<Bot className="shrink-0 text-muted-foreground/50" size={12} />}
-                placeholder="Select provider"
+                placeholder="Select mode"
               />
             ) : (
-              <div className="flex items-center gap-2 rounded-lg border border-border/30 bg-surface-1/30 px-2.5 py-1.5">
-                <Bot className="shrink-0 text-muted-foreground/50" size={12} />
-                <span className="text-[11px] text-foreground/80">
-                  {availableProviders[0] ? providerDropdownLabel(availableProviders[0].id, availableProviders[0].name) : ''}
-                </span>
-              </div>
+              renderStaticChoice(
+                availableModes[0] ? MODE_LABEL[availableModes[0]] : '',
+                <Bot className="shrink-0 text-muted-foreground/50" size={12} />,
+              )
             )}
 
-            {/* Claude config */}
-            {selectedProvider === 'claude' && (
+            {selectedMode === 'review' && (
               <>
-                <ConfigRow label="Model" stacked>
-                  <SelectMenu value={claudeModel} options={CLAUDE_MODELS} onChange={setClaudeModel} />
-                </ConfigRow>
-                <ConfigRow label="Effort" stacked>
-                  <SegmentedPicker options={CLAUDE_EFFORT} value={claudeEffort} onChange={setClaudeEffort} />
-                </ConfigRow>
-              </>
-            )}
-
-            {/* Codex config */}
-            {selectedProvider === 'codex' && (
-              <>
-                <ConfigRow label="Model" stacked>
-                  <SelectMenu value={codexModel} options={CODEX_MODELS} onChange={setCodexModel} />
-                </ConfigRow>
-                <ConfigRow label="Reasoning" stacked>
-                  <SegmentedPicker options={CODEX_REASONING} value={codexReasoning} onChange={setCodexReasoning} />
-                </ConfigRow>
-                <ConfigRow label="Fast mode">
-                  <Toggle checked={codexFast} onChange={setCodexFast} />
-                </ConfigRow>
-              </>
-            )}
-
-            {/* Tour config */}
-            {selectedProvider === 'tour' && (
-              <>
-                {claudeAvailable && codexAvailable && (
-                  <ConfigRow label="Engine">
-                    <SegmentedPicker
-                      options={[{ value: 'claude', label: 'Claude' }, { value: 'codex', label: 'Codex' }]}
-                      value={tourEngine}
-                      onChange={(v) => setTourEngine(v as 'claude' | 'codex')}
-                    />
-                  </ConfigRow>
+                {renderEngineSelect(reviewEngine, setReviewEngine)}
+                {reviewEngine === 'claude' && (
+                  <>
+                    <ConfigRow label="Model" stacked>
+                      <SelectMenu value={claudeModel} options={CLAUDE_MODELS} onChange={setClaudeModel} />
+                    </ConfigRow>
+                    <ConfigRow label="Effort" stacked>
+                      <SegmentedPicker options={CLAUDE_EFFORT} value={claudeEffort} onChange={setClaudeEffort} />
+                    </ConfigRow>
+                  </>
                 )}
+                {reviewEngine === 'codex' && (
+                  <>
+                    <ConfigRow label="Model" stacked>
+                      <SelectMenu value={codexModel} options={CODEX_MODELS} onChange={setCodexModel} />
+                    </ConfigRow>
+                    <ConfigRow label="Reasoning" stacked>
+                      <SegmentedPicker options={CODEX_REASONING} value={codexReasoning} onChange={setCodexReasoning} />
+                    </ConfigRow>
+                    <ConfigRow label="Fast mode">
+                      <Toggle checked={codexFast} onChange={setCodexFast} />
+                    </ConfigRow>
+                  </>
+                )}
+              </>
+            )}
+
+            {selectedMode === 'tour' && (
+              <>
+                {renderEngineSelect(tourEngine, setTourEngine)}
                 <ConfigRow label="Model" stacked>
                   <SelectMenu
                     value={tourEngine === 'claude' ? tourClaudeModel : tourCodexModel}
@@ -546,11 +586,15 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
                     onChange={tourEngine === 'claude' ? setTourClaudeModel : setTourCodexModel}
                   />
                 </ConfigRow>
+
+                {/* Claude-only: effort level */}
                 {tourEngine === 'claude' && (
                   <ConfigRow label="Effort" stacked>
                     <SegmentedPicker options={CLAUDE_EFFORT} value={tourClaudeEffort} onChange={setTourClaudeEffort} />
                   </ConfigRow>
                 )}
+
+                {/* Codex-only: reasoning effort + fast mode */}
                 {tourEngine === 'codex' && (
                   <>
                     <ConfigRow label="Reasoning" stacked>
@@ -567,7 +611,7 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
 
           <button
             onClick={handleLaunch}
-            disabled={!selectedProvider}
+            disabled={!canLaunch}
             className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary py-2 font-medium text-[12px] text-primary-foreground transition-colors hover:bg-primary/90 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Play size={11} />
