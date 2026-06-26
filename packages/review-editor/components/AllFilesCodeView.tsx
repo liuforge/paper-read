@@ -23,13 +23,16 @@ import type {
 import { CommentPopover } from '@plannotator/ui/components/CommentPopover';
 import { usePierreTheme } from '../hooks/usePierreTheme';
 import { useIsWorkerPoolReadyOrDisabled, useWorkerPoolThemeSync } from '../workerPool';
-import type { DiffFile } from '../types';
+import type { DiffFile, AnnotationScrollTarget } from '../types';
 import { buildFileTree, getVisualFileOrder } from '../utils/buildFileTree';
 import { buildCodeNavRequest } from '../utils/buildCodeNavRequest';
 import { getDiffSelection, getLineNumberFromNode, getSideFromNode } from '../utils/diffSelection';
 import { isContentConsistentWithPatch } from '../utils/patchConsistency';
 import { ToolbarHost, type ToolbarHostHandle } from './ToolbarHost';
 import { FileHeader } from './FileHeader';
+import { FileCommentBanner } from './FileCommentBanner';
+import { annotationMatchesPrScope, isFileScopedAnnotation, lineRangeForAnnotation } from '../utils/annotationScope';
+import { lineAnnotationMetadata } from '../utils/annotationDisplay';
 import { InlineAnnotation } from './InlineAnnotation';
 import { detectLanguage } from '../utils/detectLanguage';
 import type { AIChatEntry } from '../hooks/useAIChat';
@@ -153,6 +156,7 @@ interface AllFilesCodeViewProps {
   // line annotations render through CodeView item state.
   annotations: CodeAnnotation[];
   selectedAnnotationId: string | null;
+  scrollTargetAnnotation: AnnotationScrollTarget | null;
   pendingSelection: SelectedLineRange | null;
   reviewBase?: string;
   // Annotation / toolbar wiring (P2). Mirrors AllFilesDiffView's surface so the
@@ -244,11 +248,14 @@ function hashString(value: string): string {
   return hash.toString(36);
 }
 
-// Project a file's line annotations into Pierre's DiffLineAnnotation shape. This
-// is the EXACT projection AllFilesDiffView builds (side, lineNumber = lineEnd,
-// metadata = DiffAnnotationMetadata) so the two surfaces render identically.
-// Filters to line-scoped annotations that belong to this file in the active
-// PR/diff-scope (file-scoped comments live in the header, not the gutter).
+// The first rendered line of a file's diff, used to anchor file-scoped comments.
+// Pierre suppresses the header-prefix slot whenever a custom header is present
+// (renderDiffChildren makes them mutually exclusive), so file comments can't
+// live "between header and body" — instead they ride the line-annotation slot
+// Project a file's LINE annotations into Pierre's DiffLineAnnotation shape (side,
+// lineNumber = lineEnd, metadata = DiffAnnotationMetadata). File-scoped comments
+// are deliberately excluded — they render in the file header (renderCustomHeader),
+// not the gutter (see fileCommentsByPath).
 function projectFileAnnotations(
   annotations: CodeAnnotation[],
   filePath: string,
@@ -260,24 +267,12 @@ function projectFileAnnotations(
       (a) =>
         a.filePath === filePath &&
         (a.scope ?? 'line') === 'line' &&
-        (!a.prUrl || !prUrl || a.prUrl === prUrl) &&
-        (!a.diffScope || !prDiffScope || a.diffScope === prDiffScope),
+        annotationMatchesPrScope(a, prUrl, prDiffScope),
     )
     .map((ann) => ({
       side: ann.side === 'new' ? ('additions' as const) : ('deletions' as const),
       lineNumber: ann.lineEnd,
-      metadata: {
-        annotationId: ann.id,
-        type: ann.type,
-        text: ann.text,
-        suggestedCode: ann.suggestedCode,
-        originalCode: ann.originalCode,
-        author: ann.author,
-        severity: ann.severity,
-        reasoning: ann.reasoning,
-        conventionalLabel: ann.conventionalLabel,
-        decorations: ann.decorations,
-      } as DiffAnnotationMetadata,
+      metadata: lineAnnotationMetadata(ann),
     }));
 }
 
@@ -384,6 +379,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   fontSize,
   annotations,
   selectedAnnotationId,
+  scrollTargetAnnotation,
   pendingSelection,
   reviewBase,
   onLineSelection,
@@ -514,8 +510,12 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   // file's patch CONTENT changes (diff type / base / whitespace / PR switch),
   // and is used as the CodeView `key` to force a remount + fresh seed.
   const fileSetKey = useMemo(
-    () => `${files.length}:${files.map((f, i) => `${f.path}#${patchHashes[i]}`).join('|')}`,
-    [files, patchHashes],
+    // prUrl/prDiffScope are part of the key so a pure scope switch (layer ↔
+    // full-stack, same file set) remounts and re-seeds annotations through the
+    // current scope filter — the incremental sync bails on an unchanged
+    // annotations ref and can't otherwise detect the filter change.
+    () => `${prUrl ?? ''}:${prDiffScope ?? ''}:${files.length}:${files.map((f, i) => `${f.path}#${patchHashes[i]}`).join('|')}`,
+    [files, patchHashes, prUrl, prDiffScope],
   );
 
   // Visual-order list of file paths (for [/] stepping). Derived from items so it
@@ -659,6 +659,21 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     toolbarHostRef.current?.startEdit(ann);
   });
 
+  // Per-file file-scoped comments, namespaced to the active PR/diff-scope. These
+  // render in the file HEADER (renderCustomHeader, below the path) when the file
+  // is expanded — not in the gutter — so they read as a file-level note rather
+  // than a stray line comment.
+  const fileCommentsByPath = useMemo(() => {
+    const map = new Map<string, CodeAnnotation[]>();
+    for (const a of annotations) {
+      if (!isFileScopedAnnotation(a) || !annotationMatchesPrScope(a, prUrl, prDiffScope)) continue;
+      const arr = map.get(a.filePath);
+      if (arr) arr.push(a);
+      else map.set(a.filePath, [a]);
+    }
+    return map;
+  }, [annotations, prUrl, prDiffScope]);
+
   // Render a single annotation from item state. `renderAnnotation` receives both
   // the LineAnnotation and DiffLineAnnotation union — guard `'side' in
   // annotation && item.type === 'diff'` (the Diffshub pattern) so file-item
@@ -678,6 +693,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         <InlineAnnotation
           metadata={annotation.metadata}
           language={filePath ? detectLanguage(filePath) : undefined}
+          isSelected={selectedAnnotationId === annotation.metadata.annotationId}
           onSelect={onSelectAnnotation}
           onEdit={handleEditAnnotation}
           onDelete={onDeleteAnnotation}
@@ -1256,15 +1272,24 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     const signatures = (list: CodeAnnotation[]) => {
       const map = new Map<string, string>();
       for (const a of list) {
-        if ((a.scope ?? 'line') !== 'line') continue;
-        if (a.prUrl && prUrl && a.prUrl !== prUrl) continue;
-        if (a.diffScope && prDiffScope && a.diffScope !== prDiffScope) continue;
-        const sig = JSON.stringify([
-          a.id, a.lineEnd, a.side, a.type,
-          a.text ?? '', a.suggestedCode ?? '', a.originalCode ?? '',
-          a.conventionalLabel ?? '', (a.decorations ?? []).join(','),
-          a.severity ?? '', a.reasoning ?? '', a.author ?? '',
-        ]);
+        const scope = a.scope ?? 'line';
+        if (scope !== 'line' && scope !== 'file') continue;
+        if (!annotationMatchesPrScope(a, prUrl, prDiffScope)) continue;
+        // File comments carry different render-affecting fields than line notes
+        // (no line/side/suggestion; they DO surface source + profile badges).
+        const sig = scope === 'file'
+          ? JSON.stringify([
+              'F', a.id, a.text ?? '', a.source ?? '', a.author ?? '',
+              a.reviewProfileLabel ?? '', a.conventionalLabel ?? '',
+              (a.decorations ?? []).join(','), a.createdAt ?? 0, a.reasoning ?? '',
+            ])
+          : JSON.stringify([
+              a.id, a.lineEnd, a.side, a.type,
+              a.text ?? '', a.suggestedCode ?? '', a.originalCode ?? '',
+              a.conventionalLabel ?? '', (a.decorations ?? []).join(','),
+              a.severity ?? '', a.reasoning ?? '', a.author ?? '',
+              a.reviewProfileLabel ?? '', a.source ?? '', a.createdAt ?? 0,
+            ]);
         map.set(a.filePath, `${map.get(a.filePath) ?? ''}${sig}\n`);
       }
       return map;
@@ -1406,9 +1431,28 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   //   2. A toolbar-originated range CodeView doesn't know about (gutter-utility
   //      click on a not-yet-active file, draft restore) → paint it on the
   //      active file's item.
+  // The controlled line highlight for a selected annotation (null for file-scoped
+  // / unresolved). Shared by the compose-end restore and the selection-replay
+  // effect so the two can't diverge.
+  const lineSelectionForAnnotation = useStableCallback(
+    (ann: CodeAnnotation | null | undefined): CodeViewLineSelection | null => {
+      if (!ann || isFileScopedAnnotation(ann)) return null;
+      const itemId = filePathToItemId.get(ann.filePath);
+      return itemId != null ? { id: itemId, range: lineRangeForAnnotation(ann) } : null;
+    },
+  );
+  // Mirror so the effect below can restore the selected comment's highlight when
+  // a compose ends, without taking selectedAnnotationId as a dep.
+  const selectedAnnotationIdRef = useRef(selectedAnnotationId);
+  selectedAnnotationIdRef.current = selectedAnnotationId;
   useEffect(() => {
     if (pendingSelection == null) {
-      setSelectedLines(null);
+      // Compose ended — restore the selected line comment's highlight instead of
+      // clearing, mirroring single-file's `pendingSelection ?? annotationRange`.
+      const ann = selectedAnnotationIdRef.current
+        ? annotationsRef.current.find((a) => a.id === selectedAnnotationIdRef.current)
+        : null;
+      setSelectedLines(lineSelectionForAnnotation(ann));
       return;
     }
     const current = selectedLinesRef.current;
@@ -1543,26 +1587,57 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     viewer.scrollTo({ type: 'item', id: itemId, align: 'start' });
   }, []);
 
-  // --- Selected-annotation navigation (P4) -----------------------------------
+  // --- Selected-annotation highlight + navigation ----------------------------
 
-  // Selecting an annotation in the sidebar must expand its owning file (if
-  // collapsed) and scroll to it. We expand via item state (collapsed=false +
-  // version bump + updateItem — the Diffshub pattern), then scrollTo the
-  // annotation's line range so it lands in view. rAF defers the scroll one frame
-  // so the expand's layout has settled before CodeView resolves the line top.
-  // `annotations` is read through the ref, NOT the dep list: this must fire only
-  // when the SELECTION changes. With `annotations` as a dep, any annotation
-  // change while one is selected (add/edit/delete elsewhere, an external SSE
-  // annotation arriving) re-runs the effect and yanks the viewport back to the
-  // selected annotation with zero user action.
+  // SELECTION (inline card OR sidebar) paints the line highlight + repaints the
+  // card ring — but NEVER scrolls. Clicking a comment in the diff must not move
+  // the viewport. `annotations` is read through the ref so this fires only on
+  // selection change, not on any add/edit/delete while one is selected.
+  // Read-only mirror of pendingSelection so the selection effect can yield to an
+  // active compose WITHOUT taking pendingSelection as a dep (which would re-run
+  // it on every drag delta).
+  const pendingSelectionRef = useRef(pendingSelection);
+  pendingSelectionRef.current = pendingSelection;
+  const prevSelectedFileRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedAnnotationId) return;
-    const ann = annotationsRef.current.find((a) => a.id === selectedAnnotationId);
+    const ann = selectedAnnotationId
+      ? annotationsRef.current.find((a) => a.id === selectedAnnotationId)
+      : null;
+    const newFile = ann?.filePath ?? null;
+
+    // Repaint the inline card's selected ring on the previously- AND
+    // newly-selected file: renderAnnotation only re-runs on updateItem, so a bare
+    // selection-state change wouldn't otherwise reach the portal'd cards.
+    const filesToRefresh = new Set<string>();
+    if (prevSelectedFileRef.current) filesToRefresh.add(prevSelectedFileRef.current);
+    if (newFile) filesToRefresh.add(newFile);
+    prevSelectedFileRef.current = newFile;
+    for (const path of filesToRefresh) {
+      for (const itemId of filePathToItemIds.get(path) ?? []) refreshItem(itemId);
+    }
+
+    // An active compose (toolbar open) owns selectedLines — clicking/deselecting a
+    // comment must not clobber the in-progress range highlight. Mirrors
+    // single-file DiffViewer's `pendingSelection ?? selectedAnnotationRange`.
+    if (pendingSelectionRef.current != null) return;
+
+    // Replay the selected line comment's range as the controlled highlight (the
+    // same state a drag paints); file-scoped / deselection clears it.
+    setSelectedLines(lineSelectionForAnnotation(ann));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAnnotationId, filePathToItemId, filePathToItemIds, refreshItem]);
+
+  // NAVIGATION (sidebar only) — expand the owning file if collapsed and scroll
+  // to the comment. Keyed on the navigation token so it fires per sidebar click
+  // (re-clicking the same comment re-centers it) and NEVER on a bare in-diff
+  // selection. rAF defers the scroll a frame so the expand's layout has settled.
+  useEffect(() => {
+    if (!scrollTargetAnnotation) return;
+    const ann = annotationsRef.current.find((a) => a.id === scrollTargetAnnotation.id);
     if (!ann) return;
     const itemId = filePathToItemId.get(ann.filePath);
-    if (itemId == null) return;
     const handle = viewerRef.current;
-    if (handle == null) return;
+    if (itemId == null || handle == null) return;
 
     const item = handle.getItem(itemId);
     if (item != null && item.collapsed === true) {
@@ -1571,17 +1646,17 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       handle.updateItem(item);
     }
 
-    const start = Math.min(ann.lineStart, ann.lineEnd);
-    const end = Math.max(ann.lineStart, ann.lineEnd);
-    const side = ann.side === 'new' ? ('additions' as const) : ('deletions' as const);
+    const isFile = isFileScopedAnnotation(ann);
+    const range = lineRangeForAnnotation(ann);
     const raf = requestAnimationFrame(() => {
       const viewer = viewerRef.current;
       if (viewer == null) return;
-      viewer.scrollTo({ type: 'range', id: itemId, range: { start, end, side } });
+      if (isFile) viewer.scrollTo({ type: 'item', id: itemId, align: 'start' });
+      else viewer.scrollTo({ type: 'range', id: itemId, range });
     });
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAnnotationId, filePathToItemId]);
+  }, [scrollTargetAnnotation, filePathToItemId]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -1699,9 +1774,11 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     if (file == null) return null;
 
     const collapsed = item.collapsed === true;
+    const fileComments = fileCommentsByPath.get(filePath) ?? [];
 
     return (
-      <FileHeader
+      <div className="flex flex-col">
+        <FileHeader
         filePath={filePath}
         patch={file.patch}
         status={file.status}
@@ -1747,7 +1824,24 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
           </button>
         }
         onCollapseToggle={() => toggleItemCollapsed(item.id)}
-      />
+        />
+        {/* File-scoped comments live in the header (below the path), shown only
+            when the file is expanded. They ride the sticky header — fine for a
+            short guide note; long ones scroll within the banner. */}
+        {!collapsed && fileComments.length > 0 && (
+          <FileCommentBanner
+            comments={fileComments}
+            selectedAnnotationId={selectedAnnotationId}
+            onSelect={onSelectAnnotation}
+            onEdit={onEditAnnotation}
+            onDelete={onDeleteAnnotation}
+            // Re-measure the item when a comment expands/collapses/edits — the
+            // custom-header height isn't auto-observed, so without this the
+            // content below would overlap until an unrelated refresh.
+            onHeightChange={() => refreshItem(item.id)}
+          />
+        )}
+      </div>
     );
   });
 
@@ -1784,6 +1878,9 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       enableGutterUtility: true,
       hunkSeparators: 'line-info',
       stickyHeaders: true,
+      // Flush files together (no inter-file gap) — file boundaries already read
+      // via the sticky header. Keep Pierre's default 8px list edge padding.
+      layout: { gap: 0, paddingTop: 8, paddingBottom: 8 },
       itemMetrics: {
         diffHeaderHeight: PANEL_HEADER_HEIGHT,
         hunkSeparatorHeight: HUNK_SEPARATOR_HEIGHT,
