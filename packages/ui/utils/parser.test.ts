@@ -155,6 +155,103 @@ describe("parseMarkdownToBlocks — code fences", () => {
   });
 });
 
+describe("parseMarkdownToBlocks — display math", () => {
+  test("multi-line $$ block produces a math block", () => {
+    const md = "$$\n\\int_0^1 x^2 dx = \\frac{1}{3}\n$$";
+    const blocks = parseMarkdownToBlocks(md);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("math");
+    expect(blocks[0].content).toBe("\\int_0^1 x^2 dx = \\frac{1}{3}");
+    expect(blocks[0].startLine).toBe(1);
+    expect(blocks[0].sourceLineCount).toBe(3);
+  });
+
+  test("single-line $$ block produces a math block", () => {
+    const blocks = parseMarkdownToBlocks("before\n\n$$ E = mc^2 $$\n\nafter");
+    expect(blocks.map((b) => b.type)).toEqual(["paragraph", "math", "paragraph"]);
+    expect(blocks[1].content).toBe("E = mc^2");
+    expect(blocks[1].startLine).toBe(3);
+    expect(blocks[1].sourceLineCount).toBe(1);
+  });
+
+  test("display math does not swallow following paragraphs", () => {
+    const md = "$$\na^2 + b^2 = c^2\n$$\n\nText after.";
+    const blocks = parseMarkdownToBlocks(md);
+    expect(blocks.map((b) => b.type)).toEqual(["math", "paragraph"]);
+    expect(blocks[1].content).toBe("Text after.");
+  });
+
+  test("unclosed display math extends to EOF", () => {
+    const blocks = parseMarkdownToBlocks("$$\nx + y");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("math");
+    expect(blocks[0].content).toBe("x + y");
+  });
+
+  test("empty single-line display math does not swallow following content", () => {
+    const blocks = parseMarkdownToBlocks("$$$$\n\nAfter");
+    expect(blocks.map((b) => b.type)).toEqual(["math", "paragraph"]);
+    expect(blocks[0].content).toBe("");
+    expect(blocks[1].content).toBe("After");
+  });
+
+  test("multi-line \\[ block produces a math block", () => {
+    const md = "\\[\n\\int_0^1 x^2 dx = \\frac{1}{3}\n\\]";
+    const blocks = parseMarkdownToBlocks(md);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("math");
+    expect(blocks[0].content).toBe("\\int_0^1 x^2 dx = \\frac{1}{3}");
+    expect(blocks[0].startLine).toBe(1);
+    expect(blocks[0].sourceLineCount).toBe(3);
+  });
+
+  test("single-line \\[ block produces a math block", () => {
+    const blocks = parseMarkdownToBlocks("before\n\n\\[ E = mc^2 \\]\n\nafter");
+    expect(blocks.map((b) => b.type)).toEqual(["paragraph", "math", "paragraph"]);
+    expect(blocks[1].content).toBe("E = mc^2");
+    expect(blocks[1].startLine).toBe(3);
+    expect(blocks[1].sourceLineCount).toBe(1);
+  });
+
+  // Regression: the closing $$ was only recognized when it was the last thing
+  // on the line, so a trailing char (a period) or trailing words made the line
+  // look like an unterminated opener and swallowed the rest of the document.
+  test("$$ closing with a trailing period does not swallow following content", () => {
+    const md = "$$E = mc^2$$.\n\n## Next\n\nBody.";
+    const blocks = parseMarkdownToBlocks(md);
+    expect(blocks.map((b) => b.type)).toEqual(["math", "paragraph", "heading", "paragraph"]);
+    expect(blocks[0].content).toBe("E = mc^2");
+    expect(blocks[1].content).toBe(".");
+    expect(blocks[2].content).toBe("Next");
+  });
+
+  test("$$ closing with trailing words keeps the trailing text as a paragraph", () => {
+    const md = "$$E = mc^2$$ where E is energy.\n\n## Deploy";
+    const blocks = parseMarkdownToBlocks(md);
+    expect(blocks.map((b) => b.type)).toEqual(["math", "paragraph", "heading"]);
+    expect(blocks[0].content).toBe("E = mc^2");
+    expect(blocks[1].content).toBe("where E is energy.");
+  });
+
+  test("multi-line $$ whose closing line has trailing text does not swallow", () => {
+    const md = "$$\na + b\n= c $$ done\n\nNext.";
+    const blocks = parseMarkdownToBlocks(md);
+    expect(blocks.map((b) => b.type)).toEqual(["math", "paragraph", "paragraph"]);
+    expect(blocks[0].content).toBe("a + b\n= c ");
+    expect(blocks[1].content).toBe("done");
+    expect(blocks[2].content).toBe("Next.");
+  });
+
+  test("\\[ closing with a trailing period does not swallow following content", () => {
+    const md = "\\[a^2 + b^2 = c^2\\].\n\n## Next\n\nBody.";
+    const blocks = parseMarkdownToBlocks(md);
+    expect(blocks.map((b) => b.type)).toEqual(["math", "paragraph", "heading", "paragraph"]);
+    expect(blocks[0].content).toBe("a^2 + b^2 = c^2");
+    expect(blocks[1].content).toBe(".");
+    expect(blocks[2].content).toBe("Next");
+  });
+});
+
 describe("parseMarkdownToBlocks — tables", () => {
   test("pipe-delimited table parses correctly", () => {
     const md = "| A | B |\n|---|---|\n| 1 | 2 |";
@@ -988,5 +1085,13 @@ describe("exportAnnotations — line labels", () => {
   test("no sourceConverted means no caveat", () => {
     const output = exportAnnotations(blocks, [{ blockId: blocks[0].id, type: "COMMENT", text: "ok", originalText: "Heading", startOffset: 0 }]);
     expect(output).not.toContain("converted markdown");
+  });
+
+  test("math block line labels cover source fences", () => {
+    const mathBlocks = parseMarkdownToBlocks("Intro\n\n$$\nx + y\n$$");
+    const math = mathBlocks.find(b => b.type === "math")!;
+    const anns = [{ blockId: math.id, type: "COMMENT", text: "clarify", originalText: "x + y", startOffset: 0 }];
+    const output = exportAnnotations(mathBlocks, anns);
+    expect(output).toContain("(lines 3–5)");
   });
 });

@@ -293,6 +293,96 @@ export const parseMarkdownToBlocks = (markdown: string): Block[] => {
       continue;
     }
 
+    // Display math: $$ ... $$
+    if (trimmed.startsWith('$$')) {
+      flush();
+      const mathStartLine = currentLineNum;
+      const afterOpen = trimmed.slice(2);
+      const mathLines: string[] = [];
+      let remainder = '';
+      // Find the closing $$ anywhere on the opening line (not just at its end),
+      // so `$$x$$.` or `$$x$$ trailing` close correctly instead of running on.
+      const inlineClose = afterOpen.indexOf('$$');
+      if (inlineClose !== -1) {
+        const body = afterOpen.slice(0, inlineClose).trim();
+        if (body) mathLines.push(body);
+        remainder = afterOpen.slice(inlineClose + 2).trim();
+      } else {
+        if (afterOpen.trim()) mathLines.push(afterOpen.trim());
+        while (i + 1 < lines.length) {
+          i++;
+          const closeAt = lines[i].indexOf('$$');
+          if (closeAt !== -1) {
+            const before = lines[i].slice(0, closeAt);
+            if (before.trim()) mathLines.push(before);
+            remainder = lines[i].slice(closeAt + 2).trim();
+            break;
+          }
+          mathLines.push(lines[i]);
+        }
+      }
+
+      blocks.push({
+        id: `block-${currentId++}`,
+        type: 'math',
+        content: mathLines.join('\n'),
+        order: currentId,
+        startLine: mathStartLine,
+        sourceLineCount: i + contentStartLine - mathStartLine + 1,
+      });
+
+      // Trailing text after the closing $$ isn't math — reprocess it as its own
+      // line so it renders normally instead of being swallowed into the block.
+      if (remainder) {
+        lines[i] = remainder;
+        i--;
+      }
+      continue;
+    }
+
+    // Display math: \[ ... \]
+    if (trimmed.startsWith('\\[')) {
+      flush();
+      const mathStartLine = currentLineNum;
+      const afterOpen = trimmed.slice(2);
+      const mathLines: string[] = [];
+      let remainder = '';
+      const inlineClose = afterOpen.indexOf('\\]');
+      if (inlineClose !== -1) {
+        const body = afterOpen.slice(0, inlineClose).trim();
+        if (body) mathLines.push(body);
+        remainder = afterOpen.slice(inlineClose + 2).trim();
+      } else {
+        if (afterOpen.trim()) mathLines.push(afterOpen.trim());
+        while (i + 1 < lines.length) {
+          i++;
+          const closeAt = lines[i].indexOf('\\]');
+          if (closeAt !== -1) {
+            const before = lines[i].slice(0, closeAt);
+            if (before.trim()) mathLines.push(before);
+            remainder = lines[i].slice(closeAt + 2).trim();
+            break;
+          }
+          mathLines.push(lines[i]);
+        }
+      }
+
+      blocks.push({
+        id: `block-${currentId++}`,
+        type: 'math',
+        content: mathLines.join('\n'),
+        order: currentId,
+        startLine: mathStartLine,
+        sourceLineCount: i + contentStartLine - mathStartLine + 1,
+      });
+
+      if (remainder) {
+        lines[i] = remainder;
+        i--;
+      }
+      continue;
+    }
+
     // Tables (lines starting with |)
     if (trimmed.startsWith('|')) {
       flush();
@@ -502,6 +592,9 @@ export interface ExportAnnotationsOptions {
 
 /** Compute the end line of a block from its content and type. */
 const blockEndLine = (block: Block): number => {
+  if (block.sourceLineCount && block.sourceLineCount > 0) {
+    return block.startLine + block.sourceLineCount - 1;
+  }
   if (!block.content) return block.startLine;
   const contentLines = block.content.split('\n').length;
   if (block.type === 'code') return block.startLine + contentLines + 1;
