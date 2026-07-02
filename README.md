@@ -1,17 +1,15 @@
-# Plannotator — Paper Reading Mode for OpenCode
+# Paper Read — Interactive Paper Reading for OpenCode
 
 > Forked from [backnotprop/plannotator](https://github.com/backnotprop/plannotator).  
 > **Turn Plannotator into an interactive paper-reading workflow for OpenCode.**
 
 ## What This Is
 
-A modified Plannotator that replaces the plan-review flow with a **paper-reading workflow**. Given an arXiv ID, it downloads the paper, generates a structured report, opens it in Plannotator for multi-round annotation and feedback, then persists the final report and updates a knowledge graph.
+Given an arXiv ID, this workflow downloads the paper, generates a structured report, opens it in Plannotator for multi-round annotation and feedback, then persists the final report and updates a knowledge graph.
 
 ## Fix: Ask AI Now Works with OpenCode
 
 The original Plannotator's "Ask AI" showed a **"Session error"** in the OpenCode desktop app. The AI runtime created a new `OpenCodeProvider` instead of reusing the existing authenticated client. This fork fixes that.
-
-### Changes (4 files)
 
 | File | Change |
 |------|--------|
@@ -48,47 +46,42 @@ The default report structure follows these 7 items:
 
 ## Installation
 
-### 1. Add the plugin to your OpenCode config
+### 1. Clone this repo
+
+```bash
+git clone https://github.com/liuforge/paper-read.git
+```
+
+### 2. Build and install the plugin
+
+```bash
+cd paper-read
+bun install
+bun run build
+```
+
+### 3. Copy the workflow files
+
+```bash
+cp -r paper-read/.opencode/* /path/to/your/project/.opencode/
+```
+
+### 4. Add the plugin to your OpenCode config
 
 ```jsonc
 // .opencode/opencode.jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "skills": {
-    "paths": [".agents/skills"]
-  },
   "plugin": [
-    "opencode-chrome-devtools@latest",
-    "@tarquinen/opencode-dcp@latest",
     ["@plannotator/opencode@latest", {
       "workflow": "plan-agent",
       "planningAgents": ["plan", "read"]
-    }],
-    "@mem0/opencode-plugin@latest"
+    }]
   ]
 }
 ```
 
-### 2. Add the agent and command files
-
-Copy `paper-read/` contents to your `.opencode/` directory:
-
-```
-.opencode/
-├── agents/read.md
-├── command/read.md
-├── commands/read.md
-├── opencode.jsonc
-└── skills/paper-read/SKILL.md
-```
-
-### 3. Install the Plannotator CLI
-
-```bash
-curl -fsSL https://plannotator.ai/install.sh | bash
-```
-
-### 4. Restart OpenCode
+### 5. Restart OpenCode
 
 ## Usage
 
@@ -97,6 +90,12 @@ curl -fsSL https://plannotator.ai/install.sh | bash
 ```
 
 Or switch to `read` mode and type the arXiv ID directly.
+
+## Future Work
+
+- **Wiki & knowledge graph persistence** — complete the post-approval pipeline: `report.md` → wiki ingest → `build graph` for full knowledge base integration
+- **HTML generation speed** — optimize report rendering to reduce latency
+- **Token efficiency** — reduce context usage during paper ingestion and report generation
 
 ## License
 
