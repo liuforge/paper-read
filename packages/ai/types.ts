@@ -398,4 +398,6 @@ export interface OpenCodeConfig extends AIProviderConfig {
   hostname?: string;
   /** Port for the OpenCode server. Default: 4096. */
   port?: number;
+  /** Pre-existing OpencodeClient to reuse instead of creating a new connection. */
+  client?: import("@opencode-ai/sdk").OpencodeClient;
 }

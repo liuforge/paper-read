@@ -62,6 +62,10 @@ export class OpenCodeProvider implements AIProvider {
 
 	constructor(config: OpenCodeConfig) {
 		this.config = config;
+		// Use pre-existing client if provided (e.g., from OpenCode desktop app)
+		if (config.client) {
+			this.client = config.client;
+		}
 	}
 
 	/** Attach to an existing OpenCode server or spawn one if needed. */

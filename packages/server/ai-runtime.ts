@@ -18,6 +18,8 @@ export const AI_QUERY_ENDPOINT = "/api/ai/query";
 interface CreateAIRuntimeOptions {
   cwd?: string;
   getCwd?: () => string;
+  /** Pre-existing OpencodeClient to reuse for AI (avoids spawning a new server). */
+  opencodeClient?: import("@opencode-ai/sdk").OpencodeClient;
 }
 
 export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Promise<AIRuntime> {
@@ -81,10 +83,11 @@ export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Pro
   try {
     const { OpenCodeProvider } = await import("@plannotator/ai/providers/opencode-sdk");
     const opencodePath = Bun.which("opencode");
-    if (opencodePath) {
+    if (opencodePath || options.opencodeClient) {
       const provider = await createProvider({
         type: "opencode-sdk",
         cwd,
+        ...(options.opencodeClient && { client: options.opencodeClient }),
       });
       if (provider instanceof OpenCodeProvider) {
         modelDiscovery.push(provider.fetchModels().catch(() => {}));

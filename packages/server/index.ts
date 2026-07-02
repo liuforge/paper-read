@@ -157,7 +157,7 @@ export async function startPlannotatorServer(
   const draftKey = mode !== "archive" ? contentHash(plan) : "";
   const editorAnnotations = mode !== "archive" ? createEditorAnnotationHandler() : null;
   const externalAnnotations = mode !== "archive" ? createExternalAnnotationHandler("plan") : null;
-  const aiRuntime = mode !== "archive" ? await createAIRuntime() : null;
+  const aiRuntime = mode !== "archive" ? await createAIRuntime({ opencodeClient: options.opencodeClient }) : null;
   const slug = mode !== "archive" ? generateSlug(plan) : "";
 
   // Lazy cache for in-session archive browsing (plan review sidebar tab)
