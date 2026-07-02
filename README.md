@@ -1,11 +1,11 @@
 # Paper Read — Interactive Paper Reading for OpenCode
 
 > Forked from [backnotprop/plannotator](https://github.com/backnotprop/plannotator).  
-> **Turn Plannotator into an interactive paper-reading workflow for OpenCode.**
+> **An interactive paper-reading workflow for OpenCode.**
 
 ## What This Is
 
-Given an arXiv ID, this workflow downloads the paper, generates a structured report, opens it in Plannotator for multi-round annotation and feedback, then persists the final report and updates a knowledge graph.
+Given an arXiv ID, this workflow downloads the paper, generates a structured report, opens it in paper-read for multi-round annotation and feedback, then persists the final report and updates a knowledge graph.
 
 ## Fix: Ask AI Now Works with OpenCode
 
@@ -24,7 +24,7 @@ The original Plannotator's "Ask AI" showed a **"Session error"** in the OpenCode
 
 1. **Download/load paper** — arXiv ID, URL, or local PDF/TXT
 2. **Draft report in memory** — markdown, following the Report SOP (do NOT write to disk yet)
-3. **Call `submit_plan`** — opens Plannotator review UI in browser
+3. **Call `submit_plan`** — opens paper-read review UI in browser
 4. **Multi-round annotation** — annotate → Request Changes → agent edits → resubmit
 5. **Approve** → write `report.md` → wiki ingest → `build graph`
 
